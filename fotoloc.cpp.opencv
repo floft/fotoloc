@@ -1,0 +1,232 @@
+/*
+ * Using OpenCV, extract images from scanned pages
+ */
+
+#include <string>
+#include <vector>
+#include <iostream>
+#include <algorithm>
+
+// For image processing
+#include <opencv2/core/core.hpp>
+#include <opencv2/imgproc/imgproc.hpp>
+#include <opencv2/highgui/highgui.hpp>
+
+// For determining if files exist
+#include <unistd.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+
+// If we just use waitKey, then any key will exit, including resizing the
+// window with Alt which is minorly annoying
+void wait()
+{
+    char key = 0;
+
+    std::cout << "Press space to continue" << std::endl;
+
+    while (key != ' ')
+        key = cv::waitKey(0);
+}
+
+int main(int argc, char* argv[])
+{
+    // Get the files to parse
+    struct stat info;
+    std::vector<std::string> files;
+
+    for (int i = 1; i < argc; ++i)
+    {
+        if (stat(argv[i], &info) == 0 && (info.st_mode&S_IFREG))
+        {
+            files.push_back(argv[i]);
+        }
+        else
+        {
+            std::cerr << "Warning: " << argv[i] << " not found" << std::endl;
+        }
+    }
+
+    // For each of them, extract the images
+    cv::namedWindow("Output", CV_WINDOW_KEEPRATIO);
+    cv::namedWindow("Edges", CV_WINDOW_KEEPRATIO);
+    //cv::namedWindow("Threshold", CV_WINDOW_KEEPRATIO);
+    cv::namedWindow("Contours", CV_WINDOW_KEEPRATIO);
+
+    for (unsigned int i = 0; i < files.size(); ++i)
+    {
+        // Config
+        int ratio = 3;
+        int kernel_size = 3;
+        int lowThreshold = 10;
+
+        // Get image
+        cv::Mat image = cv::imread(files[i], CV_LOAD_IMAGE_COLOR);
+
+        if (!image.data)
+        {
+            std::cout << "Warning: " << files[i] << " invalid" << std::endl;
+            continue;
+        }
+
+        // Grayscale
+        cv::Mat gray;
+        cv::cvtColor(image, gray, CV_BGR2GRAY);
+
+        // Reduce noise
+        //cv::blur(gray, edges, cv::Size(kernel_size,kernel_size));
+
+        //
+        // Edge detection
+        //
+        //cv::Canny(edges, edges, lowThreshold, lowThreshold*ratio, kernel_size);
+        cv::Mat edges, g1, g2;
+        cv::GaussianBlur(gray, g1, cv::Size(75,75), 0);
+        cv::GaussianBlur(gray, g2, cv::Size(21,21), 0);
+        edges = g1 - g2;
+
+        //cv::Mat edges;
+        //cv::Sobel(gray, edges, CV_8U, 3, 3, 5, 1, 0, cv::BORDER_DEFAULT);
+
+        // Invert
+        //cv::subtract(cv::Scalar::all(255), edges, edges);
+
+        // Grayscale
+        //cv::cvtColor(edges, edges, CV_BGR2GRAY);
+
+        //
+        // Threshold
+        //
+        cv::threshold(edges, edges, 10, 255, cv::THRESH_BINARY);
+
+        //
+        // Find the contours
+        //
+        std::vector<std::vector<cv::Point>> contours;
+        std::vector<cv::Vec4i> hierarchy;
+
+        cv::findContours(edges, contours, hierarchy, CV_RETR_TREE,
+                CV_CHAIN_APPROX_SIMPLE, cv::Point(0,0));
+
+        // If we didn't find any, skip the rest
+        if (contours.empty())
+        {
+            std::cout << "Couldn't find contours, skipping" << std::endl;
+            cv::imshow("Edges", edges);
+            wait();
+            continue;
+        }
+
+        // Approximate contours to get bounding box
+        std::vector<std::vector<cv::Point>> contours_poly(contours.size());
+        std::vector<cv::Rect> boundRect(contours.size());
+
+        for (unsigned int j = 0; j < contours.size(); ++j)
+        {
+            cv::approxPolyDP(cv::Mat(contours[j]), contours_poly[j], 3, true);
+            boundRect[j] = cv::boundingRect(cv::Mat(contours_poly[j]));
+        }
+
+        //
+        // Find bounding box area threshold
+        //
+
+        // Calculate vector of areas sorted by size
+        std::vector<double> areas;
+        areas.reserve(contours.size());
+
+        for (unsigned int j = 0; j < contours.size(); ++j)
+            areas.push_back(boundRect[j].area());
+
+        std::sort(areas.begin(), areas.end());
+
+        double percent = 0.25; // Throw out small contours threshold
+
+        // Find first bound box area less than 1/4 the total image area
+        double maxArea = image.size().width * image.size().height / 4;
+        double minArea = percent*maxArea;
+
+        for (unsigned int j = contours.size()-1; j != 0; --j)
+        {
+            if (areas[j] < maxArea)
+            {
+                minArea = percent*areas[j];
+                break;
+            }
+        }
+
+        // Sort based on difference with previous
+        /*std::vector<double> ratios;
+        ratios.reserve(contours.size());
+
+        for (unsigned int j = 1; j < contours.size(); ++j)
+        {
+            if (areas[j-1] == 0)
+                ratios.push_back(0);
+            else
+                ratios.push_back(areas[j] / areas[j-1]);
+        }
+
+        std::sort(ratios.begin(), ratios.end());
+
+        // Average last few jumps
+        double jumpAvg = 0;
+
+        int jumpAvgCount = 5; // Number to average for jump
+        int jumpEnd = 2; // Skip last two
+
+        for (unsigned int j = contours.size() - jumpAvgCount - jumpEnd;
+                j < contours.size() - jumpEnd; ++j)
+            jumpAvg += ratios[j];
+
+        jumpAvg = jumpAvg / jumpAvgCount;
+
+        // Go backward from end to find last place with greater than this jump
+        unsigned int avgNum = 1;
+
+        for (unsigned int j = contours.size()-2; j > 1; --j, ++avgNum)
+            if (areas[j] == 0 || areas[j+1] / areas[j] > jumpAvg)
+                break;
+
+        // Average numbers after big jump
+        double average = 0;
+        unsigned int startIndex = (contours.size()>avgNum)?(contours.size()-avgNum):0;
+
+        for (unsigned int j = startIndex; j < contours.size(); ++j)
+        {
+            average += areas[j];
+            std::cout << areas[j] << std::endl;
+        }
+
+        average = average / (contours.size() - startIndex);
+
+        // Throw out small contours
+        double minArea = 0.50*average;*/
+
+        //
+        // Draw contour
+        //
+        cv::Mat contourTrace = cv::Mat::zeros(image.size(), CV_8UC3);
+        for (unsigned int j = 0; j < contours.size(); ++j)
+        {
+            if (boundRect[j].area() < minArea)
+                continue;
+
+            cv::Scalar color(127,127,127);
+            cv::drawContours(contourTrace, contours_poly, j, color, 1, 8,
+                    std::vector<cv::Vec4i>(), 0, cv::Point());
+            cv::rectangle(contourTrace, boundRect[j].tl(), boundRect[j].br(), color, 2, 8, 0);
+        }
+
+        //
+        // Debug
+        //
+        cv::imshow("Output", image);
+        cv::imshow("Edges", edges);
+        //cv::imshow("Threshold", threshold);
+        cv::imshow("Contours", contourTrace);
+        wait();
+    }
+
+    return 0;
+}
