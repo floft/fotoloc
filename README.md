@@ -21,7 +21,7 @@ libtiff (custom: http://www.libtiff.org/misc.html)
 
 ### License ###
 The majority of this code is licensed under the
-[MIT](http://floft.net/uploads/mit-license.txt) license. In addition, this
+[MIT](http://floft.net/files/mit-license.txt) license. In addition, this
 software includes code from:
 
 Ivan Kuckir, [Fast Gaussian Blur](http://blog.ivank.net/fastest-gaussian-blur.html) (MIT)
